@@ -1432,7 +1432,7 @@ A checker is disabled if it is contained in
 
 
 ;;; Generic syntax checkers
-(defconst flycheck-generic-checker-version 2
+(defconst flycheck-generic-checker-version 3
   "The internal version of generic syntax checker declarations.
 
 Flycheck will not use syntax checkers whose generic version is
@@ -1498,6 +1498,15 @@ DOCSTRING is the documentation of the syntax checker, for
 `flycheck-describe-checker'.  The following PROPERTIES constitute
 a generic syntax checker.  Unless otherwise noted, all properties
 are mandatory.
+
+`:kind KIND'
+     The kind of syntax checker.
+
+     See `flycheck-checker-kinds' for all supported kinds.
+
+     This property is used for ordering syntax checkers for
+     execution: A `syntax' checker runs before `type', which runs
+     before `lint', etc.
 
 `:start FUNCTION'
      A function to start the syntax checker.
@@ -1606,6 +1615,16 @@ are mandatory.
 
      This property is optional.
 
+`:conflicts-with CHECKERS'
+     A single syntax checker or a list of syntax checkers
+     this syntax checker conflicts with.
+
+     Conflicting syntax checkers will never be used together in
+     the same buffer.  In case of conflicts the first enabled and
+     usable syntax checker in `flycheck-checkers' wins.
+
+     This property is optional.
+
 `:error-filter FUNCTION'
      A function to filter the errors returned by this checker.
 
@@ -1650,11 +1669,13 @@ are mandatory.
 Signal an error, if any property has an invalid value."
   (declare (indent 1)
            (doc-string 2))
-  (let ((start (plist-get properties :start))
+  (let ((kind (plist-get properties :kind))
+        (start (plist-get properties :start))
         (interrupt (plist-get properties :interrupt))
         (print-doc (plist-get properties :print-doc))
         (modes (plist-get properties :modes))
         (predicate (plist-get properties :predicate))
+        (conflicts-with (plist-get properties :conflicts-with))
         (verify (plist-get properties :verify))
         (filter (or (plist-get properties :error-filter) #'identity))
         (next-checkers (plist-get properties :next-checkers))
@@ -1662,7 +1683,12 @@ Signal an error, if any property has an invalid value."
 
     (unless (listp modes)
       (setq modes (list modes)))
+    (unless (listp conflicts-with)
+      (setq conflicts-with (list conflicts-with)))
 
+    (unless (memq kind flycheck-checker-kinds)
+      (error ":kind %S of syntax checker %s is not a valid kind of %s"
+             kind symbol flycheck-checker-kinds))
     (unless (functionp start)
       (error ":start %S of syntax checker %s is not a function" symbol start))
     (unless (or (null interrupt) (functionp interrupt))
@@ -1683,6 +1709,9 @@ Signal an error, if any property has an invalid value."
     (unless (or (null predicate) (functionp predicate))
       (error ":predicate %S of syntax checker %s  is not a function"
              symbol predicate))
+    (unless (listp conflicts-with)
+      (error ":conflicts-with %S of syntax checker %s is not a list"
+             symbol conflicts-with))
     (unless (functionp filter)
       (error ":error-filter %S of syntax checker %s is not a function"
              symbol filter))
@@ -1696,11 +1725,13 @@ Signal an error, if any property has an invalid value."
 Try to reinstall the package defining this syntax checker." symbol)
                               nil))))
       (pcase-dolist (`(,prop . ,value)
-                     `((start         . ,start)
+                     `((kind          . ,kind)
+                       (start         . ,start)
                        (interrupt     . ,interrupt)
                        (print-doc     . ,print-doc)
                        (modes         . ,modes)
                        (predicate     . ,real-predicate)
+                       (conficts-with . ,conflicts-with)
                        (verify        . ,verify)
                        (error-filter  . ,filter)
                        (next-checkers . ,next-checkers)
@@ -5515,10 +5546,12 @@ be quoted.  Also, implicitly define the executable variable for
 SYMBOL with `flycheck-def-executable-var'."
   (declare (indent 1)
            (doc-string 2))
-  (let ((command (plist-get properties :command))
+  (let ((kind (plist-get properties :kind))
+        (command (plist-get properties :command))
         (parser (plist-get properties :error-parser))
         (filter (plist-get properties :error-filter))
         (predicate (plist-get properties :predicate))
+        (conflicts-with (plist-get properties :conflicts-with))
         (verify-fn (plist-get properties :verify)))
 
     `(progn
@@ -5526,6 +5559,7 @@ SYMBOL with `flycheck-def-executable-var'."
 
        (flycheck-define-command-checker ',symbol
          ,docstring
+         :kind ',kind
          :command ',command
          ,@(when parser
              `(:error-parser #',parser))
@@ -5535,6 +5569,8 @@ SYMBOL with `flycheck-def-executable-var'."
          :modes ',(plist-get properties :modes)
          ,@(when predicate
              `(:predicate #',predicate))
+         ,@(when conflicts-with
+             `(:conflicts-with ',conflicts-with))
          :next-checkers ',(plist-get properties :next-checkers)
          ,@(when verify-fn
              `(:verify #',verify-fn))
@@ -6360,6 +6396,7 @@ This variable has no effect, if
   "An Emacs Lisp syntax checker using the Emacs Lisp Byte compiler.
 
 See Info Node `(elisp)Byte Compilation'."
+  :kind syntax
   :command ("emacs" (eval flycheck-emacs-args)
             (eval
              (let ((path (pcase flycheck-emacs-lisp-load-path
@@ -6466,6 +6503,7 @@ Variables are taken from `flycheck-emacs-lisp-checkdoc-variables'."
   "An Emacs Lisp style checker using CheckDoc.
 
 The checker runs `checkdoc-current-buffer'."
+  :kind style
   :command ("emacs" (eval flycheck-emacs-args)
             "--eval" (eval (flycheck-sexp-to-string
                             (flycheck-emacs-lisp-checkdoc-variables-form)))
@@ -7592,6 +7630,7 @@ and their names."
   "A Puppet DSL style checker using puppet-lint.
 
 See URL `http://puppet-lint.com/'."
+  :kind lint
   ;; We must check the original file, because Puppetlint is quite picky on the
   ;; names of files and there place in the directory structure, to comply with
   ;; Puppet's autoload directory layout.  For instance, a class foo::bar is
@@ -7689,6 +7728,8 @@ Update the error level of ERR according to
 
 Requires Flake8 2.0 or newer. See URL
 `https://flake8.readthedocs.io/'."
+  ;; flake8 does a syntax check first so let's run as early as possible
+  :kind syntax
   :command ("flake8"
             "--format=default"
             (config-file "--config" flycheck-flake8rc)
@@ -7730,6 +7771,8 @@ which should be used and reported to the user."
 This syntax checker requires Pylint 1.0 or newer.
 
 See URL `https://www.pylint.org/'."
+  ;; pylint does a syntax check first so let's run as early as possible
+  :kind syntax
   ;; -r n disables the scoring report
   :command ("pylint" "-r" "n"
             "--msg-template"
@@ -7761,6 +7804,7 @@ See URL `https://www.pylint.org/'."
   "A Python syntax checker using Python's builtin compiler.
 
 See URL `https://docs.python.org/3.4/library/py_compile.html'."
+  :kind syntax
   :command ("python" "-m" "py_compile" source)
   :error-patterns
   ;; Python 2.7
@@ -7774,7 +7818,8 @@ See URL `https://docs.python.org/3.4/library/py_compile.html'."
    (error line-start "SyntaxError: ('" (message (one-or-more (not (any "'"))))
           "', ('" (file-name (one-or-more (not (any "'")))) "', "
           line ", " column ", " (one-or-more not-newline) line-end))
-  :modes python-mode)
+  :modes python-mode
+  :conflicts-with (python-pylint python-flake8))
 
 (flycheck-def-option-var flycheck-lintr-caching t r-lintr
   "Whether to enable caching in lintr.
@@ -7809,6 +7854,7 @@ expression, which selects linters for lintr."
   "An R style and syntax checker using the lintr package.
 
 See URL `https://github.com/jimhester/lintr'."
+  :kind lint
   :command ("R" "--slave" "--restore" "--no-save" "-e"
             (eval (concat
                    "library(lintr);"
@@ -7856,6 +7902,7 @@ The `compiler-lib' racket package is required for this syntax
 checker.
 
 See URL `https://racket-lang.org/'."
+  :kind syntax
   :command ("raco" "expand" source-inplace)
   :predicate
   (lambda ()
@@ -7880,6 +7927,7 @@ See URL `https://racket-lang.org/'."
   "A RPM SPEC file syntax checker using rpmlint.
 
 See URL `https://sourceforge.net/projects/rpmlint/'."
+  :kind lint
   :command ("rpmlint" source)
   :error-patterns
   ((error line-start
@@ -7938,6 +7986,7 @@ See URL
   "Markdown checker using mdl.
 
 See URL `https://github.com/mivok/markdownlint'."
+  :kind lint
   :command ("mdl"
             (config-file "--style" flycheck-markdown-mdl-style)
             (option "--tags=" flycheck-markdown-mdl-rules concat
@@ -7968,6 +8017,7 @@ part of a Sphinx project."
   "A ReStructuredText (RST) syntax checker using Docutils.
 
 See URL `http://docutils.sourceforge.net/'."
+  :kind syntax
   ;; We need to use source-inplace to properly resolve relative paths in
   ;; include:: directives
   :command ("rst2pseudoxml.py" "--report=2" "--halt=5"
@@ -7994,6 +8044,7 @@ Sphinx via `-n'."
   "A ReStructuredText (RST) syntax checker using Sphinx.
 
 Requires Sphinx 1.2 or newer.  See URL `http://sphinx-doc.org'."
+  :kind syntax
   :command ("sphinx-build" "-b" "pseudoxml"
             "-q" "-N"                   ; Reduced output and no colors
             (option-flag "-n" flycheck-sphinx-warn-on-missing-references)
@@ -8009,7 +8060,8 @@ Requires Sphinx 1.2 or newer.  See URL `http://sphinx-doc.org'."
           (message) line-end))
   :modes rst-mode
   :predicate (lambda () (and (flycheck-buffer-saved-p)
-                             (flycheck-locate-sphinx-source-directory))))
+                             (flycheck-locate-sphinx-source-directory)))
+  :conflicts-with rst)
 
 (flycheck-def-config-file-var flycheck-rubocoprc ruby-rubocop ".rubocop.yml"
   :safe #'stringp)
@@ -8029,6 +8081,10 @@ Otherwise report style issues as well."
 You need at least RuboCop 0.34 for this syntax checker.
 
 See URL `http://batsov.com/rubocop/'."
+  ;; Even though rubocop's primary purpose is to lint and check for style
+  ;; issues, it does a syntax checker first, with great error messages, so we'd
+  ;; like to run rubocop as early as possible.
+  :kind syntax
   :command ("rubocop" "--display-cop-names" "--format" "emacs"
             ;; Explicitly disable caching to prevent Rubocop 0.35.1 and earlier
             ;; from caching standard input.  Later versions of Rubocop
@@ -8065,6 +8121,7 @@ See URL `http://batsov.com/rubocop/'."
 Requires ruby-lint 2.0 or newer.  To use `flycheck-rubylintrc',
 ruby-lint 2.0.2 or newer is required.  See URL
 `https://github.com/YorickPeterse/ruby-lint'."
+  :kind lint
   :command ("ruby-lint" "--presenter=syntastic"
             (config-file "--config" flycheck-rubylintrc)
             source)
@@ -8090,6 +8147,7 @@ implementations.
 Please consider using `ruby-rubocop' or `ruby-rubylint' instead.
 
 See URL `https://www.ruby-lang.org/'."
+  :kind syntax
   :command ("ruby" "-w" "-c")
   :standard-input t
   :error-patterns
@@ -8099,7 +8157,8 @@ See URL `https://www.ruby-lang.org/'."
             " warning: " (message) line-end)
    (error line-start "-:" line ": " (message) line-end))
   :modes (enh-ruby-mode ruby-mode)
-  :next-checkers ((warning . ruby-rubylint)))
+  :next-checkers ((warning . ruby-rubylint))
+  :conflicts-with ruby-rubocop)
 
 (flycheck-define-checker ruby-jruby
   "A Ruby syntax checker using the JRuby interpreter.
@@ -8117,7 +8176,8 @@ See URL `http://jruby.org/'."
    (warning line-start "-:" line " warning: " (message) line-end)
    (error line-start  "-:" line ": " (message) line-end))
   :modes (enh-ruby-mode ruby-mode)
-  :next-checkers ((warning . ruby-rubylint)))
+  :next-checkers ((warning . ruby-rubylint))
+  :conflicts-with ruby-rubocop)
 
 (flycheck-def-args-var flycheck-rust-args (rust-cargo rust)
   :package-version '(flycheck . "0.24"))
@@ -8187,6 +8247,7 @@ Relative paths are relative to the file being checked."
   "A Rust syntax checker using Cargo.
 
 This syntax checker needs Cargo with rustc subcommand."
+  :kind syntax
   :command ("cargo" "rustc"
             (eval (cond
                    ((string= flycheck-rust-crate-type "lib") "--lib")
@@ -8225,6 +8286,7 @@ This syntax checker needs Cargo with rustc subcommand."
 This syntax checker needs Rust 1.0.0 alpha or newer.
 
 See URL `https://www.rust-lang.org'."
+  :kind syntax
   :command ("rustc" "-Z" "no-trans"
             (option "--crate-type" flycheck-rust-crate-type)
             (option-flag "--test" flycheck-rust-check-tests)
@@ -8249,7 +8311,8 @@ See URL `https://www.rust-lang.org'."
          (message) line-end))
   :modes rust-mode
   :predicate (lambda ()
-               (and (not flycheck-rust-crate-root) (flycheck-buffer-saved-p))))
+               (and (not flycheck-rust-crate-root) (flycheck-buffer-saved-p)))
+  :conflicts-with rust-cargo)
 
 (defvar flycheck-sass-scss-cache-directory nil
   "The cache directory for `sass' and `scss'.")
@@ -8275,6 +8338,7 @@ When non-nil, enable the Compass CSS framework, via `--compass'."
   "A Sass syntax checker using the Sass compiler.
 
 See URL `http://sass-lang.com'."
+  :kind syntax
   :command ("sass"
             "--cache-location" (eval (flycheck-sass-scss-cache-location))
             (option-flag "--compass" flycheck-sass-compass)
@@ -8305,6 +8369,7 @@ See URL `http://sass-lang.com'."
   "A Scala syntax checker using the Scala compiler.
 
 See URL `http://www.scala-lang.org/'."
+  :kind syntax
   :command ("scalac" "-Ystop-after:parser" source)
   :error-patterns
   ((error line-start (file-name) ":" line ": error: " (message) line-end))
@@ -8322,6 +8387,7 @@ Note that this syntax checker is not used if
 `flycheck-scalastylerc' is nil or refers to a non-existing file.
 
 See URL `http://www.scalastyle.org'."
+  :kind style
   :command ("scalastyle"
             (config-file "-c" flycheck-scalastylerc)
             source)
@@ -8386,6 +8452,8 @@ Please run gem install scss_lint_reporter_checkstyle"
 Needs SCSS-Lint 0.43.2 or newer.
 
 See URL `https://github.com/brigade/scss-lint'."
+  ;; SCSS-Lint checks syntax, too, so we'd like to run it as early as possible
+  :kind syntax
   :command ("scss-lint"
             "--require=scss_lint_reporter_checkstyle"
             "--format=Checkstyle"
@@ -8433,6 +8501,7 @@ When non-nil, enable the Compass CSS framework, via `--compass'."
   "A SCSS syntax checker using the SCSS compiler.
 
 See URL `http://sass-lang.com'."
+  :kind syntax
   :command ("scss"
             "--cache-location" (eval (flycheck-sass-scss-cache-location))
             (option-flag "--compass" flycheck-scss-compass)
@@ -8457,12 +8526,16 @@ See URL `http://sass-lang.com'."
             (optional "\r") "\n" (one-or-more " ") "on line " line
             " of an unknown file"
             line-end))
-  :modes scss-mode)
+  :modes scss-mode
+  ;; `scss-lint' checks syntax as well, and much more, so we'd only like to us
+  ;; this checker if `scss-lint' is not available.
+  :conflicts-with scss-lint)
 
 (flycheck-define-checker sh-bash
   "A Bash syntax checker using the Bash shell.
 
 See URL `http://www.gnu.org/software/bash/'."
+  :kind syntax
   :command ("bash" "--norc" "-n" "--")
   :standard-input t
   :error-patterns
@@ -8481,6 +8554,7 @@ See URL `http://www.gnu.org/software/bash/'."
   "A POSIX Shell syntax checker using the Dash shell.
 
 See URL `http://gondor.apana.org.au/~herbert/dash/'."
+  :kind syntax
   :command ("dash" "-n")
   :standard-input t
   :error-patterns
@@ -8493,6 +8567,7 @@ See URL `http://gondor.apana.org.au/~herbert/dash/'."
   "A POSIX Shell syntax checker using the Bash shell.
 
 See URL `http://www.gnu.org/software/bash/'."
+  :kind syntax
   :command ("bash" "--posix" "--norc" "-n" "--")
   :standard-input t
   :error-patterns
@@ -8505,12 +8580,14 @@ See URL `http://www.gnu.org/software/bash/'."
           (message) line-end))
   :modes sh-mode
   :predicate (lambda () (eq sh-shell 'sh))
-  :next-checkers ((warning . sh-shellcheck)))
+  :next-checkers ((warning . sh-shellcheck))
+  :conflicts-with sh-posix-dash)
 
 (flycheck-define-checker sh-zsh
   "A Zsh syntax checker using the Zsh shell.
 
 See URL `http://www.zsh.org/'."
+  :kind syntax
   :command ("zsh" "--no-exec" "--no-globalrcs" "--no-rcs" source)
   :error-patterns
   ((error line-start (file-name) ":" line ": " (message) line-end))
@@ -8536,6 +8613,7 @@ By default, no warnings are excluded."
   "A shell script syntax and style checker using Shellcheck.
 
 See URL `https://github.com/koalaman/shellcheck/'."
+  :kind lint
   :command ("shellcheck"
             "--format" "checkstyle"
             "--shell" (eval (symbol-name sh-shell))
@@ -8563,6 +8641,7 @@ See URL `https://github.com/koalaman/shellcheck/'."
   "A Slim syntax checker using the Slim compiler.
 
 See URL `http://slim-lang.com'."
+  :kind syntax
   :command ("slimrb" "--compile")
   :standard-input t
   :error-patterns
@@ -8576,6 +8655,7 @@ See URL `http://slim-lang.com'."
   "A SQL syntax checker using the sqlint tool.
 
 See URL `https://github.com/purcell/sqlint'."
+  :kind syntax
   :command ("sqlint")
   :standard-input t
   :error-patterns
@@ -8600,6 +8680,7 @@ See URL `https://github.com/purcell/sqlint'."
   "A TeX and LaTeX syntax and style checker using chktex.
 
 See URL `http://www.nongnu.org/chktex/'."
+  :kind lint
   :command ("chktex"
             (config-file "--localrc" flycheck-chktexrc)
             ;; Compact error messages, and no version information, and execute
@@ -8618,6 +8699,7 @@ See URL `http://www.nongnu.org/chktex/'."
   "A LaTeX syntax and style checker using lacheck.
 
 See URL `http://www.ctan.org/pkg/lacheck'."
+  :kind lint
   :command ("lacheck" source-inplace)
   :error-patterns
   ((warning line-start
@@ -8629,6 +8711,7 @@ See URL `http://www.ctan.org/pkg/lacheck'."
   "A Texinfo syntax checker using makeinfo.
 
 See URL `http://www.gnu.org/software/texinfo/'."
+  :kind syntax
   :command ("makeinfo" "-o" null-device "-")
   :standard-input t
   :error-patterns
@@ -8690,6 +8773,7 @@ Relative paths are relative to the file being checked."
   "A Verilog syntax checker using the Verilator Verilog HDL simulator.
 
 See URL `http://www.veripool.org/wiki/verilator'."
+  :kind syntax
   :command ("verilator" "--lint-only" "-Wall"
             (option-list "-I" flycheck-verilator-include-path concat)
             source)
@@ -8704,6 +8788,7 @@ See URL `http://www.veripool.org/wiki/verilator'."
   "A XML syntax checker and validator using the xmlstarlet utility.
 
 See URL `http://xmlstar.sourceforge.net/'."
+  :kind syntax
   ;; Validate standard input with verbose error messages, and do not dump
   ;; contents to standard output
   :command ("xmlstarlet" "val" "--err" "--quiet" "-")
@@ -8717,16 +8802,19 @@ See URL `http://xmlstar.sourceforge.net/'."
 
 The xmllint is part of libxml2, see URL
 `http://www.xmlsoft.org/'."
+  :kind syntax
   :command ("xmllint" "--noout" "-")
   :standard-input t
   :error-patterns
   ((error line-start "-:" line ": " (message) line-end))
-  :modes (xml-mode nxml-mode))
+  :modes (xml-mode nxml-mode)
+  :conflicts-with xml-xmlstarlet)
 
 (flycheck-define-checker yaml-jsyaml
   "A YAML syntax checker using JS-YAML.
 
 See URL `https://github.com/nodeca/js-yaml'."
+  :kind syntax
   :command ("js-yaml")
   :standard-input t
   :error-patterns
@@ -8743,6 +8831,7 @@ This syntax checker uses the YAML parser from Ruby's standard
 library.
 
 See URL `http://www.ruby-doc.org/stdlib-2.0.0/libdoc/yaml/rdoc/YAML.html'."
+  :kind syntax
   :command ("ruby" "-ryaml" "-e" "begin;
    YAML.load(STDIN); \
  rescue Exception => e; \
@@ -8752,7 +8841,8 @@ See URL `http://www.ruby-doc.org/stdlib-2.0.0/libdoc/yaml/rdoc/YAML.html'."
   :error-patterns
   ((error line-start "stdin:" (zero-or-more not-newline) ":" (message)
           "at line " line " column " column  line-end))
-  :modes yaml-mode)
+  :modes yaml-mode
+  :conflicts-with yaml-jsyaml)
 
 (provide 'flycheck)
 
