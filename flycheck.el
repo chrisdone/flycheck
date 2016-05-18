@@ -209,7 +209,6 @@ attention to case differences."
     luacheck
     lua
     perl
-    perl-perlcritic
     php
     php-phpmd
     php-phpcs
@@ -2922,8 +2921,7 @@ with `flycheck-process-error-functions'."
 
 Return t if ERR may be shown for the current buffer, or nil
 otherwise."
-  (let ((file-name (flycheck-error-filename err))
-        (message (flycheck-error-message err)))
+  (let ((message (flycheck-error-message err)))
     (and
      message
      (not (string-empty-p message))
@@ -6898,41 +6896,6 @@ See URL `http://www.perl.org'."
           (or "." (and ", " (zero-or-more not-newline))) line-end))
   :modes (perl-mode cperl-mode)
   :next-checkers (perl-perlcritic))
-
-(flycheck-def-option-var flycheck-perlcritic-severity nil perl-perlcritic
-  "The message severity for Perl Critic.
-
-The value of this variable is a severity level as integer, for
-the `--severity' option to Perl Critic."
-  :type '(integer :tag "Severity level")
-  :safe #'integerp
-  :package-version '(flycheck . "0.18"))
-
-(define-obsolete-variable-alias 'flycheck-perlcritic-verbosity
-  'flycheck-perlcritic-severity "0.22")
-
-(flycheck-define-checker perl-perlcritic
-  "A Perl syntax checker using Perl::Critic.
-
-See URL `https://metacpan.org/pod/Perl::Critic'."
-  :command ("perlcritic" "--no-color" "--verbose" "%f/%l/%c/%s/%p/%m (%e)\n"
-            (option "--severity" flycheck-perlcritic-severity nil
-                    flycheck-option-int)
-            source)
-  :error-patterns
-  ((info line-start
-         (file-name) "/" line "/" column "/" (any "1") "/"
-         (id (one-or-more (not (any "/")))) "/" (message)
-         line-end)
-   (warning line-start
-            (file-name) "/" line "/" column "/" (any "234") "/"
-            (id (one-or-more (not (any "/")))) "/" (message)
-            line-end)
-   (error line-start
-          (file-name) "/" line "/" column "/" (any "5") "/"
-          (id (one-or-more (not (any "/")))) "/" (message)
-          line-end))
-  :modes (cperl-mode perl-mode))
 
 (flycheck-define-checker php
   "A PHP syntax checker using the PHP command line interpreter.
