@@ -5278,7 +5278,7 @@ CHECKER.  BUFFER is the buffer which was checked.
 Return the errors parsed with the error patterns of CHECKER."
   (funcall (flycheck-checker-get checker 'error-parser) output checker buffer))
 
-(defun flycheck-fix-error-filename (err buffer-files cwd)
+(defun flycheck-fix-error-filename (err buffer-files &rest xs)
   "Fix the file name of ERR from BUFFER-FILES.
 
 Resolves error file names relative to CWD directory.
